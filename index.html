@@ -1,1 +1,36 @@
-"Hello world" 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Test Website</title>
+    <script src="https://cdn.onesignal.com/sdks/OneSignalSDK.js" async=""></script>
+    <script>
+        window.OneSignal = window.OneSignal || [];
+        OneSignal.push(function () {
+            OneSignal.init({
+                appId: "50dd134a-7b60-4863-8e6f-d1b50c821964",
+            });
+        });
+
+        setTimeout(function () {
+            console.log("test...")
+            OneSignal.push(function () {
+                OneSignal.getUserId(function (userId) {
+                    console.log('player_id of the subscribed user is : ' + userId);
+                    // main.setState({playerId: userId});
+                    // Make a POST call to your server with the user ID
+                    var myDiv = document.createElement("div");
+
+                    myDiv.id = 'div_id';
+
+                    myDiv.innerHTML = "<h1>PlayerId: " + userId + "</h1>";
+                    document.body.appendChild(myDiv);
+                });
+                console.log("test end ...")
+            })
+        }, 3000);
+    </script>
+</head>
+<body>
+<h1>Test Website</h1>
+</body>
+</html>
