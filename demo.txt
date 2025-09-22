@@ -1,0 +1,186 @@
+namespace SearchEngineModule.Interfaces;
+
+public interface ISearchClient
+{
+    Task IndexAsync<T>(T document, string indexName) where T : class;
+    Task<T?> GetByIdAsync<T>(string id, string indexName) where T : class;
+    Task<IEnumerable<T>> SearchAsync<T>(string indexName, object query) where T : class;
+}
+📄 Interfaces/ISearchQueryBuilder.cs
+csharp
+Copy code
+namespace SearchEngineModule.Interfaces;
+
+public interface ISearchQueryBuilder
+{
+    object BuildMatchQuery(string field, string value);
+    object BuildTermQuery(string field, string value);
+    object BuildRangeQuery(string field, object from, object to);
+}
+📄 Interfaces/IBulkIndexer.cs
+csharp
+Copy code
+namespace SearchEngineModule.Interfaces;
+
+public interface IBulkIndexer
+{
+    Task BulkIndexAsync<T>(IEnumerable<T> documents, string indexName) where T : class;
+}
+📄 Interfaces/ISearchIndexManager.cs
+csharp
+Copy code
+namespace SearchEngineModule.Interfaces;
+
+public interface ISearchIndexManager
+{
+    Task CreateIndexAsync(string indexName);
+    Task DeleteIndexAsync(string indexName);
+    Task<bool> IndexExistsAsync(string indexName);
+}
+📄 Elasticsearch/ElasticSearchClient.cs
+csharp
+Copy code
+using Elastic.Clients.Elasticsearch;
+using Elastic.Transport;
+using SearchEngineModule.Interfaces;
+
+namespace SearchEngineModule.Elasticsearch;
+
+public class ElasticSearchClient : ISearchClient
+{
+    private readonly ElasticsearchClient _client;
+
+    public ElasticSearchClient(string uri, string? username = null, string? password = null)
+    {
+        var settings = new ElasticsearchClientSettings(new Uri(uri));
+
+        if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
+        {
+            settings = settings.Authentication(new BasicAuthentication(username, password));
+        }
+
+        _client = new ElasticsearchClient(settings);
+    }
+
+    public async Task IndexAsync<T>(T document, string indexName) where T : class
+    {
+        await _client.IndexAsync(document, i => i.Index(indexName));
+    }
+
+    public async Task<T?> GetByIdAsync<T>(string id, string indexName) where T : class
+    {
+        var response = await _client.GetAsync<T>(id, idx => idx.Index(indexName));
+        return response.Found ? response.Source : null;
+    }
+
+    public async Task<IEnumerable<T>> SearchAsync<T>(string indexName, object query) where T : class
+    {
+        if (query is not Query esQuery)
+            throw new ArgumentException("Invalid query type for Elasticsearch", nameof(query));
+
+        var response = await _client.SearchAsync<T>(new SearchRequest<T>(indexName)
+        {
+            Query = esQuery
+        });
+
+        return response.Documents;
+    }
+}
+📄 Elasticsearch/ElasticSearchQueryBuilder.cs
+csharp
+Copy code
+using Elastic.Clients.Elasticsearch;
+using SearchEngineModule.Interfaces;
+
+namespace SearchEngineModule.Elasticsearch;
+
+public class ElasticSearchQueryBuilder : ISearchQueryBuilder
+{
+    public object BuildMatchQuery(string field, string value)
+    {
+        return new Query(new MatchQuery(field) { Query = value });
+    }
+
+    public object BuildTermQuery(string field, string value)
+    {
+        return new Query(new TermQuery(field) { Value = value });
+    }
+
+    public object BuildRangeQuery(string field, object from, object to)
+    {
+        return new Query(new RangeQuery(field)
+        {
+            Gte = from?.ToString(),
+            Lte = to?.ToString()
+        });
+    }
+}
+📄 Elasticsearch/ElasticSearchBulkIndexer.cs
+csharp
+Copy code
+using Elastic.Clients.Elasticsearch;
+using SearchEngineModule.Interfaces;
+
+namespace SearchEngineModule.Elasticsearch;
+
+public class ElasticSearchBulkIndexer : IBulkIndexer
+{
+    private readonly ElasticsearchClient _client;
+
+    public ElasticSearchBulkIndexer(ElasticsearchClient client)
+    {
+        _client = client;
+    }
+
+    public async Task BulkIndexAsync<T>(IEnumerable<T> documents, string indexName) where T : class
+    {
+        var response = await _client.BulkAsync(b =>
+        {
+            foreach (var doc in documents)
+            {
+                b.Index<T>(i => i.Index(indexName).Document(doc));
+            }
+            return b;
+        });
+
+        if (response.Errors)
+        {
+            throw new Exception("Bulk index failed: " + string.Join(", ", response.ItemsWithErrors.Select(e => e.Error?.Reason)));
+        }
+    }
+}
+📄 Elasticsearch/ElasticSearchIndexManager.cs
+csharp
+Copy code
+using Elastic.Clients.Elasticsearch;
+using SearchEngineModule.Interfaces;
+
+namespace SearchEngineModule.Elasticsearch;
+
+public class ElasticSearchIndexManager : ISearchIndexManager
+{
+    private readonly ElasticsearchClient _client;
+
+    public ElasticSearchIndexManager(ElasticsearchClient client)
+    {
+        _client = client;
+    }
+
+    public async Task CreateIndexAsync(string indexName)
+    {
+        var response = await _client.Indices.CreateAsync(indexName);
+        if (!response.IsValidResponse)
+            throw new Exception($"Failed to create index {indexName}");
+    }
+
+    public async Task DeleteIndexAsync(string indexName)
+    {
+        await _client.Indices.DeleteAsync(indexName);
+    }
+
+    public async Task<bool> IndexExistsAsync(string indexName)
+    {
+        var response = await _client.Indices.ExistsAsync(indexName);
+        return response.Exists;
+    }
+}
