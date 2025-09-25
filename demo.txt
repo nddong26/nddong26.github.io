@@ -1,40 +1,125 @@
+1. appsettings.json
+{
+  "Elasticsearch": {
+    "Uris": [ "https://es-node1:9200", "https://es-node2:9200" ],
+    "Username": "elastic",
+    "Password": "changeme",
+    "ApiKey": null,
+    "BearerToken": null,
+    "PoolType": "Sniffing", 
+    "DefaultIndex": "my-app-index",
+    "RequestTimeout": 30000,
+    "MaxRetries": 3,
+    "MaxRetryTimeout": 60000,
+    "EnableDebugMode": true,
+    "DisableDirectStreaming": false,
+    "ThrowExceptions": true,
+    "EnableHttpCompression": true,
+    "ConnectionLimit": 80,
+    "SniffOnStartup": true,
+    "SniffOnConnectionFault": true,
+    "SniffLifeSpanSeconds": 120,
+    "CertificateFingerprint": "12:34:56:AB:CD:EF:...",
+    "Proxy": {
+      "Address": "http://proxy.local:8080",
+      "Username": "proxyuser",
+      "Password": "proxypass"
+    }
+  }
+}
+
+2. Tạo POCO config (để dễ map)
+public class ElasticsearchSettings
+{
+    public List<string> Uris { get; set; } = new();
+    public string? Username { get; set; }
+    public string? Password { get; set; }
+    public string? ApiKey { get; set; }
+    public string? BearerToken { get; set; }
+    public string PoolType { get; set; } = "Static";
+    public string? DefaultIndex { get; set; }
+    public int RequestTimeout { get; set; } = 30000;
+    public int MaxRetries { get; set; } = 3;
+    public int MaxRetryTimeout { get; set; } = 60000;
+    public bool EnableDebugMode { get; set; } = false;
+    public bool DisableDirectStreaming { get; set; } = false;
+    public bool ThrowExceptions { get; set; } = true;
+    public bool EnableHttpCompression { get; set; } = true;
+    public int ConnectionLimit { get; set; } = 80;
+    public bool SniffOnStartup { get; set; } = false;
+    public bool SniffOnConnectionFault { get; set; } = false;
+    public int SniffLifeSpanSeconds { get; set; } = 0;
+    public string? CertificateFingerprint { get; set; }
+    public ProxySettings? Proxy { get; set; }
+}
+
+public class ProxySettings
+{
+    public string Address { get; set; } = "";
+    public string? Username { get; set; }
+    public string? Password { get; set; }
+}
+
+3. Extension Method: Build ElasticsearchClient
 using Elastic.Clients.Elasticsearch;
 using Elastic.Transport;
-using Microsoft.Extensions.Options;
 
-public static class ElasticsearchServiceCollectionExtensions
+public static class ElasticsearchExtensions
 {
-    public static IServiceCollection AddElasticsearchClient(
-        this IServiceCollection services)
+    public static ElasticsearchClient AddElasticsearchClient(this IConfiguration config)
     {
-        services.AddSingleton<ElasticsearchClient>(sp =>
+        var settingsSection = config.GetSection("Elasticsearch");
+        var options = settingsSection.Get<ElasticsearchSettings>()!;
+
+        var uris = options.Uris.Select(u => new Uri(u));
+        NodePool pool = options.PoolType switch
         {
-            var options = sp.GetRequiredService<IOptions<ElasticsearchOptions>>().Value;
+            "Sniffing" => new SniffingNodePool(uris),
+            "Sticky"   => new StickyNodePool(uris),
+            _          => new StaticNodePool(uris)
+        };
 
-            if (options.Uris == null || options.Uris.Count == 0)
-                throw new ArgumentException("Elasticsearch Uris are required");
+        var connectionSettings = new ElasticsearchClientSettings(pool);
 
-            var nodeUris = options.Uris.Select(u => new Uri(u)).ToArray();
+        // Auth
+        if (!string.IsNullOrEmpty(options.Username) && !string.IsNullOrEmpty(options.Password))
+            connectionSettings.Authentication(new BasicAuthentication(options.Username, options.Password));
+        else if (!string.IsNullOrEmpty(options.ApiKey))
+            connectionSettings.Authentication(new ApiKey(options.ApiKey));
+        else if (!string.IsNullOrEmpty(options.BearerToken))
+            connectionSettings.Authentication(new BearerAuthentication(options.BearerToken));
 
-            NodePool pool = options.PoolType.ToLower() switch
-            {
-                "static"   => new StaticNodePool(nodeUris),
-                "sniffing" => new SniffingNodePool(nodeUris),
-                _          => new SingleNodePool(nodeUris[0]),
-            };
+        // Default Index
+        if (!string.IsNullOrEmpty(options.DefaultIndex))
+            connectionSettings.DefaultIndex(options.DefaultIndex);
 
-            var settings = new ElasticsearchClientSettings(pool);
+        // Request options
+        connectionSettings.RequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeout));
+        connectionSettings.MaximumRetries(options.MaxRetries);
+        connectionSettings.MaxRetryTimeout(TimeSpan.FromMilliseconds(options.MaxRetryTimeout));
 
-            if (!string.IsNullOrEmpty(options.Username) &&
-                !string.IsNullOrEmpty(options.Password))
-            {
-                settings = settings.Authentication(
-                    new BasicAuthentication(options.Username, options.Password));
-            }
+        if (options.ThrowExceptions)
+            connectionSettings.ThrowExceptions();
+        if (options.EnableDebugMode)
+            connectionSettings.EnableDebugMode();
+        if (options.DisableDirectStreaming)
+            connectionSettings.DisableDirectStreaming();
+        if (options.EnableHttpCompression)
+            connectionSettings.EnableHttpCompression();
 
-            return new ElasticsearchClient(settings);
-        });
+        // Certificate validation
+        if (!string.IsNullOrEmpty(options.CertificateFingerprint))
+            connectionSettings.CertificateFingerprint(options.CertificateFingerprint);
 
-        return services;
+        // Proxy
+        if (options.Proxy is { } proxy && !string.IsNullOrEmpty(proxy.Address))
+        {
+            var proxyUri = new Uri(proxy.Address);
+            var credentials = string.IsNullOrEmpty(proxy.Username) ? null :
+                new NetworkCredential(proxy.Username, proxy.Password);
+            connectionSettings.Proxy(proxyUri, credentials);
+        }
+
+        return new ElasticsearchClient(connectionSettings);
     }
 }
